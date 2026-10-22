@@ -83,6 +83,44 @@ Deno.serve(async (req: Request) => {
     const data = await response.json();
     const results = (data.results || []).slice(0, 20);
 
+    const opinionIds = apiToken
+      ? Array.from(new Set(
+        results.flatMap((result: { opinions?: Array<{ id: number }> }) =>
+          (result.opinions || []).map((opinion) => opinion.id),
+        ),
+      )).slice(0, 3)
+      : [];
+
+    const opinionTextEntries = await Promise.all(opinionIds.map(async (id) => {
+      const opinionController = new AbortController();
+      const opinionTimeoutId = setTimeout(() => opinionController.abort(), 7000);
+      try {
+        const opinionResponse = await fetch(
+          `https://www.courtlistener.com/api/rest/v4/opinions/${id}/`,
+          { headers, signal: opinionController.signal },
+        );
+        if (!opinionResponse.ok) return [id, null] as const;
+
+        const opinionData = await opinionResponse.json();
+        const plainText = typeof opinionData.plain_text === "string"
+          ? opinionData.plain_text.slice(0, 100000)
+          : null;
+        return [id, plainText] as const;
+      } catch {
+        return [id, null] as const;
+      } finally {
+        clearTimeout(opinionTimeoutId);
+      }
+    }));
+
+    const opinionTextById = new Map(opinionTextEntries);
+    for (const result of results) {
+      for (const opinion of result.opinions || []) {
+        const plainText = opinionTextById.get(opinion.id);
+        if (plainText) opinion.plain_text = plainText;
+      }
+    }
+
     return new Response(
       JSON.stringify({
         count: data.count || results.length,

@@ -3,7 +3,7 @@ import { buildSearchQuery, getCourtFilter } from './extraction';
 import { processResults, type RawApiResult } from './ranking';
 import { demoResults } from './demoData';
 
-const EDGE_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/courtlistener-search`;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 interface LiveSearchResponse {
@@ -11,6 +11,11 @@ interface LiveSearchResponse {
   results: RawApiResult[];
   authenticated: boolean;
   error?: string;
+}
+
+interface LiveSearchError {
+  error?: string;
+  details?: string;
 }
 
 export async function searchRecords(
@@ -25,7 +30,14 @@ export async function searchRecords(
   }
 
   try {
-    const response = await fetch(EDGE_FUNCTION_URL, {
+    if (!SUPABASE_URL || !ANON_KEY) {
+      throw new Error(
+        'Live search is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart or rebuild the app.',
+      );
+    }
+
+    const edgeFunctionUrl = `${SUPABASE_URL.replace(/\/+$/, '')}/functions/v1/courtlistener-search`;
+    const response = await fetch(edgeFunctionUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -35,7 +47,14 @@ export async function searchRecords(
     });
 
     if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({ error: 'Request failed' }));
+      const errorBody: LiveSearchError = await response.json().catch(() => ({ error: 'Request failed' }));
+      if (response.status === 429) {
+        const retrySeconds = errorBody.details?.match(/available in (\d+) seconds/i)?.[1];
+        const retryMessage = retrySeconds
+          ? `Try again in about ${Math.max(1, Math.ceil(Number(retrySeconds) / 60))} minute(s).`
+          : 'Wait a few minutes before retrying.';
+        throw new Error(`CourtListener rate limit reached. ${retryMessage}`);
+      }
       throw new Error(
         `CourtListener search failed (${response.status}): ${errorBody.error || 'Unknown error'}`,
       );

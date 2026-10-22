@@ -11,13 +11,6 @@ import type {
   LinkType,
 } from '../types';
 
-const EXPERT_INDICATORS = [
-  'expert witness', 'expert testimony', 'expert opinion', "expert's",
-  'expert testified', 'expert report', 'expert testified',
-  'testified as an expert', 'retained as an expert', 'expert in',
-  'consulting expert', 'testifying expert', 'forensic',
-];
-
 const AMBIGUOUS_INDICATORS = [
   'dr.', 'professor', 'physician', 'specialist', 'consultant',
   'analyst', 'examiner', 'investigator',
@@ -55,6 +48,7 @@ interface RawApiResult {
     snippet: string;
     type: string;
     per_curiam: boolean;
+    plain_text?: string;
   }>;
   meta?: {
     score?: { bm25?: number };
@@ -68,6 +62,11 @@ function extractSnippet(result: RawApiResult): string {
   }
   if (result.snippet) return result.snippet;
   return '';
+}
+
+function extractCandidateText(result: RawApiResult): string {
+  const fullText = result.opinions?.find((opinion) => opinion.plain_text)?.plain_text;
+  return fullText || extractSnippet(result);
 }
 
 function stripHtml(html: string): string {
@@ -89,57 +88,87 @@ function nameKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z]/g, '');
 }
 
-function detectRole(snippet: string, name: string): EvidenceRole {
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractNamePassages(text: string, name: string): string[] {
+  const surname = name.split(' ').pop() || name;
+  const fullNamePattern = escapeRegExp(name);
+  const surnamePattern = escapeRegExp(surname);
+  const mentionPattern = new RegExp(
+    `\\b${fullNamePattern}\\b|\\b(?:Mr|Mrs|Ms|Dr|Prof|Professor)\\.?\\s+${surnamePattern}\\b`,
+    'gi',
+  );
+  const passages = new Set<string>();
+
+  for (const match of text.matchAll(mentionPattern)) {
+    let start = match.index!;
+    while (start > 0 && !/[.!?;]/.test(text[start - 1])) start--;
+
+    let end = match.index! + match[0].length;
+    while (end < text.length && !/[.!?;]/.test(text[end])) end++;
+
+    const passage = text.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (passage) passages.add(passage);
+  }
+
+  return Array.from(passages).slice(0, 4);
+}
+
+function detectRole(
+  snippet: string,
+  name: string,
+  nameIndex: number,
+  titlePrefix: string,
+): EvidenceRole {
   const lower = snippet.toLowerCase();
-  const nameLower = name.toLowerCase();
-  for (const indicator of EXPERT_INDICATORS) {
-    if (lower.includes(indicator)) {
-      if (lower.includes(nameLower) || lower.includes(nameLower.split(' ')[0])) {
-        const contextWindow = lower.substring(
-          Math.max(0, lower.indexOf(nameLower) - 120),
-          Math.min(lower.length, lower.indexOf(nameLower) + nameLower.length + 120),
-        );
-        if (contextWindow.includes(indicator)) return 'expert';
-      }
-    }
-  }
-  for (const indicator of AMBIGUOUS_INDICATORS) {
-    if (lower.includes(indicator) && (lower.includes(nameLower) || lower.includes(nameLower.split(' ')[0]))) {
-      return 'ambiguous';
-    }
-  }
+  const beforeName = lower.substring(Math.max(0, nameIndex - 80), nameIndex);
+  const afterName = lower.substring(nameIndex + name.length, nameIndex + name.length + 100);
+  const sentenceBefore = beforeName.split(/[.!?;]/).pop() || beforeName;
+  const expertPrefix = /\b(?:expert|testifying|consulting)(?:\s+witness(?:es)?|\s+(?:opinion|report))?\s+$/.test(beforeName);
+  const expertList = /\bexpert\s+witness(?:es)?\b[^.!?]*[\u2013\u2014:-]\s*[^.!?]*$/.test(sentenceBefore);
+  const expertSuffix = /^\s*(?:,|[-\u2014])?\s*(?:(?:an?|the)\s+)?expert\b/.test(afterName);
+  const expertRoleStatement = /^\s*(?:,\s*)?(?:(?:was|is|served as|retained as|testified as|qualified as|offered as|identified as|designated as)\s+)?(?:as\s+)?(?:an?\s+)?expert\b/.test(afterName);
+  if (expertPrefix || expertList || expertSuffix || expertRoleStatement) return 'expert';
+
+  const titled = /\b(?:dr\.?|prof\.?|professor)\s*$/i.test(titlePrefix);
+  const professionPrefix = /\b(?:physician|specialist|consultant|analyst|examiner|investigator)\s+$/.test(beforeName);
+  const professionSuffix = new RegExp(`^\\s*(?:,\\s*)?(?:(?:an?|the)\\s+)?(?:${AMBIGUOUS_INDICATORS.slice(2).join('|')})\\b`).test(afterName);
+  if (titled || professionPrefix || professionSuffix) return 'ambiguous';
   return 'mentioned';
 }
 
 function extractCandidatesFromSnippet(
   snippet: string,
-  reqs: CaseRequirements,
 ): Array<{ name: string; role: EvidenceRole; context: string }> {
   const text = stripHtml(snippet);
   const matches = Array.from(text.matchAll(NAME_PATTERN));
-  const candidates: Array<{ name: string; role: EvidenceRole; context: string }> = [];
-  const seen = new Set<string>();
+  const candidates = new Map<string, { name: string; role: EvidenceRole; context: string }>();
 
   for (const match of matches) {
     const name = normalizeName(match[1]);
     if (name.length < 5) continue;
     if (EXCLUDE_NAMES.has(name)) continue;
     if (name.split(' ').length < 2) continue;
+    const context = extractNamePassages(text, name).join('\n');
+
+    const nameIndex = match.index! + match[0].lastIndexOf(match[1]);
+    const titlePrefix = match[0].slice(0, match[0].lastIndexOf(match[1]));
+    const role = detectRole(text, name, nameIndex, titlePrefix);
+    if (role === 'mentioned') continue;
+
     const key = nameKey(name);
-    if (seen.has(key)) continue;
-    seen.add(key);
 
-    const startIndex = Math.max(0, match.index! - 100);
-    const endIndex = Math.min(text.length, match.index! + name.length + 100);
-    const context = text.substring(startIndex, endIndex);
-
-    const role = detectRole(text, name);
-    if (role === 'mentioned' && !reqs.technicalIssues.some((i) => context.toLowerCase().includes(i.toLowerCase()))) {
-      continue;
+    const existing = candidates.get(key);
+    if (existing) {
+      existing.context = Array.from(new Set([existing.context, context])).join('\n');
+      if (role === 'expert') existing.role = role;
+    } else {
+      candidates.set(key, { name, role, context });
     }
-    candidates.push({ name, role, context });
   }
-  return candidates;
+  return Array.from(candidates.values());
 }
 
 function scoreCandidate(
@@ -157,13 +186,14 @@ function scoreCandidate(
       subjectRelevance += 15;
     }
   }
-  if (allContext.includes(reqs.expertSpecialty.toLowerCase())) {
+  const specialtyWords = reqs.expertSpecialty.toLowerCase().split(/\W+/).filter((word) => word.length > 2);
+  if (specialtyWords.length > 0 && specialtyWords.every((word) => allContext.includes(word))) {
     subjectRelevance += 20;
   }
 
   for (const record of records) {
     if (candidate.recordIds.includes(record.id)) {
-      const recText = (record.snippet + ' ' + record.caseName).toLowerCase();
+      const recText = `${allContext} ${record.snippet} ${record.caseName}`.toLowerCase();
       for (const issue of reqs.technicalIssues) {
         if (recText.includes(issue.toLowerCase())) caseRelevance += 8;
       }
@@ -194,7 +224,7 @@ function scoreCandidate(
 }
 
 function determineEvidenceStrength(role: EvidenceRole, recordCount: number, score: ScoreBreakdown): 'strong' | 'moderate' | 'weak' {
-  if (role === 'expert' && recordCount >= 2 && score.total > 60) return 'strong';
+  if (role === 'expert' && score.total >= 60) return 'strong';
   if (role === 'expert' || (recordCount >= 2 && score.total > 40)) return 'moderate';
   return 'weak';
 }
@@ -348,6 +378,7 @@ export function processResults(
     role: EvidenceRole;
     contexts: string[];
     recordIds: string[];
+    supportingEvidence: Array<{ recordId: string; passage: string }>;
     expertise: Set<string>;
     documentedIssues: Set<string>;
   }>();
@@ -356,9 +387,9 @@ export function processResults(
   for (const result of apiResults) {
     const recordId = `r-${result.cluster_id}`;
     const snippet = extractSnippet(result);
-    const cleanSnippet = stripHtml(snippet).slice(0, 600);
-
-    const extracted = extractCandidatesFromSnippet(snippet, reqs);
+    const searchSnippet = stripHtml(snippet).slice(0, 600);
+    const extracted = extractCandidatesFromSnippet(extractCandidateText(result));
+    const cleanSnippet = searchSnippet;
     const recordCandidateIds: string[] = [];
     const recordIssueIds: string[] = [];
 
@@ -370,13 +401,20 @@ export function processResults(
           role,
           contexts: [],
           recordIds: [],
+          supportingEvidence: [],
           expertise: new Set(),
           documentedIssues: new Set(),
         });
       }
       const entry = candidateMap.get(key)!;
-      entry.contexts.push(context);
+      if (!entry.contexts.includes(context)) entry.contexts.push(context);
       if (!entry.recordIds.includes(recordId)) entry.recordIds.push(recordId);
+      const priorEvidence = entry.supportingEvidence.find((evidence) => evidence.recordId === recordId);
+      if (priorEvidence) {
+        priorEvidence.passage = Array.from(new Set([priorEvidence.passage, context])).join('\n');
+      } else {
+        entry.supportingEvidence.push({ recordId, passage: context });
+      }
       if (role === 'expert' && entry.role !== 'expert') entry.role = role;
       else if (role === 'ambiguous' && entry.role === 'mentioned') entry.role = role;
 
@@ -393,12 +431,15 @@ export function processResults(
         recordIssueIds.push(issue);
       }
 
-      if (reqs.expertSpecialty) entry.expertise.add(reqs.expertSpecialty);
+      const specialtyWords = reqs.expertSpecialty.toLowerCase().split(/\W+/).filter((word) => word.length > 2);
+      if (specialtyWords.length > 0 && specialtyWords.every((word) => context.toLowerCase().includes(word))) {
+        entry.expertise.add(reqs.expertSpecialty);
+      }
       recordCandidateIds.push(key);
     }
 
     for (const issue of reqs.technicalIssues) {
-      if (cleanSnippet.toLowerCase().includes(issue.toLowerCase()) && !recordIssueIds.includes(issue)) {
+      if (searchSnippet.toLowerCase().includes(issue.toLowerCase()) && !recordIssueIds.includes(issue)) {
         recordIssueIds.push(issue);
         if (!issueMap.has(issue)) {
           issueMap.set(issue, { recordIds: new Set(), candidateIds: new Set() });
@@ -432,6 +473,12 @@ export function processResults(
   const candidates: ExpertCandidate[] = [];
   for (const [, entry] of candidateMap) {
     const candidateRecords = records.filter((r) => entry.recordIds.includes(r.id));
+    const candidateContext = entry.contexts.join(' ').toLowerCase();
+    const specialtyWords = reqs.expertSpecialty.toLowerCase().split(/\W+/).filter((word) => word.length > 2);
+    const hasSpecialtyEvidence = specialtyWords.length > 0 && specialtyWords.every((word) => candidateContext.includes(word));
+    const hasIssueEvidence = reqs.technicalIssues.some((issue) => candidateContext.includes(issue.toLowerCase()));
+    if (!hasSpecialtyEvidence && !hasIssueEvidence) continue;
+
     const score = scoreCandidate(entry, reqs, candidateRecords);
     if (score.total < 8) continue;
 
@@ -444,6 +491,7 @@ export function processResults(
       name: entry.name,
       nameReliable: entry.role === 'expert' || entry.role === 'ambiguous',
       expertise,
+      supportingEvidence: entry.supportingEvidence,
       documentedIssues,
       matchScore: Math.round(score.total),
       matchExplanation: buildMatchExplanation(entry, score, reqs, candidateRecords),

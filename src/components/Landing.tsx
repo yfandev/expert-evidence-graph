@@ -70,7 +70,10 @@ export function Landing({ onSearch, loading }: LandingProps) {
               placeholder="Example: I need an expert in forensic accounting for a lost profits dispute involving business valuation in California..."
               className="input min-h-[120px] resize-y font-sans text-sm leading-relaxed"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit('live');
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  handleSubmit('live');
+                }
               }}
             />
 

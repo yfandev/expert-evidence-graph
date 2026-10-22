@@ -278,8 +278,10 @@ export default function App() {
                 </div>
                 {filteredCandidates.length === 0 ? (
                   <EmptyState
-                    title="No candidates match filters"
-                    message="Try adjusting filters or search requirements."
+                    title={result.candidates.length === 0 ? 'No named experts found' : 'No candidates match filters'}
+                    message={result.candidates.length === 0
+                      ? 'The available opinion text does not identify a person as an expert. Try a more specific search or inspect the source records.'
+                      : 'Try adjusting filters or search requirements.'}
                   />
                 ) : (
                   filteredCandidates.map((candidate, idx) => (
@@ -314,26 +316,44 @@ export default function App() {
                 onClearSelection={() => setSelectedGraphNode(null)}
               />
 
-              {selectedCandidate && (
+              {selectedCandidate ? (
                 <div className="lg:hidden">
                   <EvidencePanel
                     candidate={selectedCandidate}
                     records={result.records}
-                    onClose={() => setSelectedCandidateId(null)}
+                    onClose={() => {
+                      setSelectedCandidateId(null);
+                      setSelectedGraphNode(null);
+                    }}
                   />
                 </div>
-              )}
+              ) : selectedGraphNode ? (
+                <div className="lg:hidden card p-3 bg-navy-950/40">
+                  <GraphNodeDetail node={selectedGraphNode} result={result} />
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
 
-        {selectedCandidate && (
+        {(selectedCandidate || selectedGraphNode) && (
           <div className="hidden lg:block fixed right-0 top-16 bottom-0 w-96 z-20 p-4">
-            <EvidencePanel
-              candidate={selectedCandidate}
-              records={result.records}
-              onClose={() => setSelectedCandidateId(null)}
-            />
+            {selectedCandidate ? (
+              <EvidencePanel
+                candidate={selectedCandidate}
+                records={result.records}
+                onClose={() => {
+                  setSelectedCandidateId(null);
+                  setSelectedGraphNode(null);
+                }}
+              />
+            ) : selectedGraphNode ? (
+              <GraphNodeSidebar
+                node={selectedGraphNode}
+                result={result}
+                onClose={() => setSelectedGraphNode(null)}
+              />
+            ) : null}
           </div>
         )}
 
@@ -472,6 +492,12 @@ function GraphPanel({
         )}
       </div>
 
+      {result.candidates.length === 0 && (
+        <p className="mt-2 text-xs text-navy-400">
+          No people were identified in the available opinion text. The graph shows cases and issues only.
+        </p>
+      )}
+
       {showLegend && (
         <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
           <LegendItem color="#b8956a" label="People (potential experts)" />
@@ -489,7 +515,7 @@ function GraphPanel({
       )}
 
       {selectedGraphNode && (
-        <div className="mt-3 card p-3 bg-navy-950/40 animate-fade-in">
+        <div className="mt-3 card p-3 bg-navy-950/40 animate-fade-in lg:hidden">
           <GraphNodeDetail node={selectedGraphNode} result={result} />
         </div>
       )}
@@ -536,6 +562,28 @@ function GraphNodeDetail({ node, result }: { node: GraphNode; result: SearchResu
     );
   }
   return null;
+}
+
+function GraphNodeSidebar({
+  node,
+  result,
+  onClose,
+}: {
+  node: GraphNode;
+  result: SearchResult;
+  onClose: () => void;
+}) {
+  return (
+    <div className="card-elevated h-full max-h-full overflow-y-auto animate-slide-in-right">
+      <div className="flex items-center justify-between p-4 border-b border-navy-800/50">
+        <h2 className="text-sm font-medium text-white capitalize">{node.type} details</h2>
+        <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs">Close</button>
+      </div>
+      <div className="p-4">
+        <GraphNodeDetail node={node} result={result} />
+      </div>
+    </div>
+  );
 }
 
 function LegendItem({ color, label }: { color: string; label: string }) {

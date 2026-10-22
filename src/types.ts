@@ -21,6 +21,7 @@ export interface ExpertCandidate {
   name: string;
   nameReliable: boolean;
   expertise: string[];
+  supportingEvidence: Array<{ recordId: string; passage: string }>;
   documentedIssues: string[];
   matchScore: number;
   matchExplanation: string;

@@ -59,7 +59,11 @@ export function EvidencePanel({ candidate, records, onClose }: EvidencePanelProp
           ) : (
             <div className="space-y-3">
               {candidateRecords.map((record) => (
-                <RecordCard key={record.id} record={record} />
+                <RecordCard
+                  key={record.id}
+                  record={record}
+                  supportingPassage={candidate.supportingEvidence.find((evidence) => evidence.recordId === record.id)?.passage}
+                />
               ))}
             </div>
           )}
@@ -91,7 +95,15 @@ export function EvidencePanel({ candidate, records, onClose }: EvidencePanelProp
   );
 }
 
-function RecordCard({ record }: { record: SourceRecord }) {
+function RecordCard({
+  record,
+  supportingPassage,
+}: {
+  record: SourceRecord;
+  supportingPassage?: string;
+}) {
+  const passage = supportingPassage || record.snippet;
+
   return (
     <div className="card p-3.5 bg-navy-950/40">
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -127,11 +139,11 @@ function RecordCard({ record }: { record: SourceRecord }) {
         )}
       </div>
 
-      {record.snippet && (
+      {passage && (
         <div className="relative pl-3 border-l-2 border-gold-400/30 mb-2.5">
           <Quote className="w-3 h-3 text-gold-400/50 absolute -left-1.5 top-0" />
           <p className="text-xs text-navy-200 leading-relaxed line-clamp-4">
-            {record.snippet}
+            {passage}
           </p>
         </div>
       )}
